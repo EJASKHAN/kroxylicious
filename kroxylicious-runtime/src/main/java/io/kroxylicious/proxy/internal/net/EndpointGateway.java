@@ -54,6 +54,18 @@ public interface EndpointGateway {
      */
     HostPort getBrokerAddress(int nodeId) throws IllegalArgumentException;
 
+    /**
+     * Broker address for given nodeId and rackId.
+     *
+     * @param nodeId node id
+     * @param rackId rack id, may be null
+     * @return broker address
+     * @throws IllegalArgumentException address for given broker node cannot be generated.
+     */
+    default HostPort getBrokerAddress(int nodeId, @Nullable String rackId) throws IllegalArgumentException {
+        return getBrokerAddress(nodeId);
+    }
+
     Optional<SslContext> getDownstreamSslContext();
 
     /**
@@ -65,6 +77,17 @@ public interface EndpointGateway {
      * @throws IllegalArgumentException if this provider cannot produce a broker address for the given nodeId.
      */
     HostPort getAdvertisedBrokerAddress(int nodeId);
+
+    /**
+     * Advertised address of broker with the given node id and rack id.
+     * @param nodeId node id
+     * @param rackId rack id, may be null
+     * @return the broker's advertised address
+     * @throws IllegalArgumentException if this provider cannot produce a broker address for the given nodeId.
+     */
+    default HostPort getAdvertisedBrokerAddress(int nodeId, @Nullable String rackId) {
+        return getAdvertisedBrokerAddress(nodeId);
+    }
 
     /**
      * Bind address to be used for network binds.

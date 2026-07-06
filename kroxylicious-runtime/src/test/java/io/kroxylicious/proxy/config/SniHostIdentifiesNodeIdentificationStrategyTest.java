@@ -6,6 +6,7 @@
 
 package io.kroxylicious.proxy.config;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -104,6 +105,37 @@ class SniHostIdentifiesNodeIdentificationStrategyTest {
     }
 
     @Test
+    void getAdvertisedBrokerAddressReplacesRackId() {
+        var strategy = new SniHostIdentifiesNodeIdentificationStrategy(GOOD_HOST_PORT.toString(), "broker-$(nodeId)-$(rackId).kafka").buildStrategy("cluster");
+
+        assertThat(strategy.getAdvertisedBrokerAddress(0, "az1")).isEqualTo(HostPort.parse("broker-0-az1.kafka:1234"));
+    }
+
+    @Test
+    void getAdvertisedBrokerAddressMapsRackId() {
+        var strategy = new SniHostIdentifiesNodeIdentificationStrategy(GOOD_HOST_PORT.toString(), "broker-$(nodeId)-$(rackId).kafka",
+                Map.of("euc1-az1", "az1")).buildStrategy("cluster");
+
+        assertThat(strategy.getAdvertisedBrokerAddress(0, "euc1-az1")).isEqualTo(HostPort.parse("broker-0-az1.kafka:1234"));
+    }
+
+    @Test
+    void getAdvertisedBrokerAddressUsesDefaultRackIdWhenRackIdMissing() {
+        var strategy = new SniHostIdentifiesNodeIdentificationStrategy(GOOD_HOST_PORT.toString(), "broker-$(nodeId)-$(rackId:az1).kafka").buildStrategy("cluster");
+
+        assertThat(strategy.getAdvertisedBrokerAddress(0, null)).isEqualTo(HostPort.parse("broker-0-az1.kafka:1234"));
+    }
+
+    @Test
+    void getAdvertisedBrokerAddressFailsWhenRackIdMissingAndNoDefaultConfigured() {
+        var strategy = new SniHostIdentifiesNodeIdentificationStrategy(GOOD_HOST_PORT.toString(), "broker-$(nodeId)-$(rackId).kafka").buildStrategy("cluster");
+
+        assertThatThrownBy(() -> strategy.getAdvertisedBrokerAddress(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("broker rackId is not available");
+    }
+
+    @Test
     void getClusterBootstrapAddress() {
         var strategy = new SniHostIdentifiesNodeIdentificationStrategy(GOOD_HOST_PORT.toString(), "broker-$(nodeId).kafka").buildStrategy("cluster");
         assertThat(strategy.getClusterBootstrapAddress()).isEqualTo(GOOD_HOST_PORT);
@@ -191,7 +223,10 @@ class SniHostIdentifiesNodeIdentificationStrategyTest {
                 argumentSet("cluster name replacement RE anchoring", "broker-$(virtualClusterName)-$(nodeId).kafka", "cluster", "start.broker-cluster-0.kafka.end:1234",
                         null),
                 argumentSet("cluster name replacement RE metacharacters in brokerAddressPattern escaped", "broker-$(virtualClusterName)-$(nodeId).kafka", "cluster",
-                        "broker-cluster-0xkafka:1234", null));
+                        "broker-cluster-0xkafka:1234", null),
+                argumentSet("rack id replacement broker 0", "broker-$(nodeId)-$(rackId).kafka", "cluster", "broker-0-az1.kafka:1234", 0),
+                argumentSet("rack id default replacement broker 0", "broker-$(nodeId)-$(rackId:az1).kafka", "cluster", "broker-0-az1.kafka:1234", 0),
+                argumentSet("rack id before node id", "broker-$(rackId).$(nodeId).kafka", "cluster", "broker-az1.12.kafka:1234", 12));
     }
 
     @ParameterizedTest(name = "{0}")

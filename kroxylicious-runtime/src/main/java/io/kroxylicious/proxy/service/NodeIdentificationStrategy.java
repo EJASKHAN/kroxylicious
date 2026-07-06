@@ -46,6 +46,19 @@ public interface NodeIdentificationStrategy {
     HostPort getBrokerAddress(int nodeId) throws IllegalArgumentException;
 
     /**
+     * Address of broker with the given node id and rack id. Strategies that do not use rack id information
+     * can ignore the rack id and return {@link #getBrokerAddress(int)}.
+     *
+     * @param nodeId node identifier
+     * @param rackId rack identifier, may be null
+     * @return broker address
+     * @throws IllegalArgumentException if this provider cannot produce a broker address for the given nodeId.
+     */
+    default HostPort getBrokerAddress(int nodeId, @Nullable String rackId) throws IllegalArgumentException {
+        return getBrokerAddress(nodeId);
+    }
+
+    /**
      * Advertised address of broker with the given node id, (advertised hostname and advertised port). This is
      * what is returned to clients and may differ from the node's bind port as presented by {@link #getBrokerAddress(int)}.
      * This enables Kroxylicious to sit behind yet another proxy that uses a different port from the kroxylicious bind port.
@@ -55,6 +68,18 @@ public interface NodeIdentificationStrategy {
      */
     default HostPort getAdvertisedBrokerAddress(int nodeId) throws IllegalArgumentException {
         return getBrokerAddress(nodeId);
+    }
+
+    /**
+     * Advertised address of broker with the given node id and rack id. Strategies that do not use rack id information
+     * can ignore the rack id and return {@link #getAdvertisedBrokerAddress(int)}.
+     * @param nodeId node id
+     * @param rackId rack identifier, may be null
+     * @return the broker's advertised address
+     * @throws IllegalArgumentException if this provider cannot produce a broker address for the given nodeId.
+     */
+    default HostPort getAdvertisedBrokerAddress(int nodeId, @Nullable String rackId) throws IllegalArgumentException {
+        return getAdvertisedBrokerAddress(nodeId);
     }
 
     /**

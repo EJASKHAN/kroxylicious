@@ -37,9 +37,12 @@ import io.kroxylicious.proxy.filter.ProduceResponseFilter;
 import io.kroxylicious.proxy.filter.ResponseFilterResult;
 import io.kroxylicious.proxy.filter.ShareAcknowledgeResponseFilter;
 import io.kroxylicious.proxy.filter.ShareFetchResponseFilter;
+import io.kroxylicious.proxy.internal.net.BrokerEndpointMapping;
 import io.kroxylicious.proxy.internal.net.EndpointGateway;
 import io.kroxylicious.proxy.internal.net.EndpointReconciler;
 import io.kroxylicious.proxy.service.HostPort;
+
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * An internal filter that rewrites broker addresses in all relevant responses to the corresponding proxy address. It also
@@ -60,10 +63,11 @@ public class BrokerAddressFilter implements MetadataResponseFilter, FindCoordina
 
     @Override
     public CompletionStage<ResponseFilterResult> onMetadataResponse(short apiVersion, ResponseHeaderData header, MetadataResponseData data, FilterContext context) {
-        var nodeMap = new HashMap<Integer, HostPort>();
+        var nodeMap = new HashMap<Integer, BrokerEndpointMapping>();
         for (MetadataResponseBroker broker : data.brokers()) {
-            nodeMap.put(broker.nodeId(), new HostPort(broker.host(), broker.port()));
-            apply(context, broker, MetadataResponseBroker::nodeId, MetadataResponseBroker::host, MetadataResponseBroker::port, MetadataResponseBroker::setHost,
+            nodeMap.put(broker.nodeId(), new BrokerEndpointMapping(new HostPort(broker.host(), broker.port()), broker.rack()));
+            apply(context, broker, broker.rack(), MetadataResponseBroker::nodeId, MetadataResponseBroker::host, MetadataResponseBroker::port,
+                    MetadataResponseBroker::setHost,
                     MetadataResponseBroker::setPort);
         }
         return doReconcileThenForwardResponse(header, data, context, nodeMap);
@@ -72,9 +76,9 @@ public class BrokerAddressFilter implements MetadataResponseFilter, FindCoordina
     @Override
     public CompletionStage<ResponseFilterResult> onDescribeClusterResponse(short apiVersion, ResponseHeaderData header, DescribeClusterResponseData data,
                                                                            FilterContext context) {
-        var nodeMap = new HashMap<Integer, HostPort>();
+        var nodeMap = new HashMap<Integer, BrokerEndpointMapping>();
         for (DescribeClusterBroker broker : data.brokers()) {
-            nodeMap.put(broker.brokerId(), new HostPort(broker.host(), broker.port()));
+            nodeMap.put(broker.brokerId(), BrokerEndpointMapping.of(new HostPort(broker.host(), broker.port())));
             apply(context, broker, DescribeClusterBroker::brokerId, DescribeClusterBroker::host, DescribeClusterBroker::port, DescribeClusterBroker::setHost,
                     DescribeClusterBroker::setPort);
         }
@@ -162,11 +166,18 @@ public class BrokerAddressFilter implements MetadataResponseFilter, FindCoordina
     private <T> void apply(FilterContext context, T broker, ToIntFunction<T> nodeIdGetter, Function<T, String> hostGetter, ToIntFunction<T> portGetter,
                            BiConsumer<T, String> hostSetter,
                            ObjIntConsumer<T> portSetter) {
+        apply(context, broker, null, nodeIdGetter, hostGetter, portGetter, hostSetter, portSetter);
+    }
+
+    private <T> void apply(FilterContext context, T broker, @Nullable String rackId, ToIntFunction<T> nodeIdGetter, Function<T, String> hostGetter,
+                           ToIntFunction<T> portGetter,
+                           BiConsumer<T, String> hostSetter,
+                           ObjIntConsumer<T> portSetter) {
         String incomingHost = hostGetter.apply(broker);
         int incomingPort = portGetter.applyAsInt(broker);
 
         int nodeId = nodeIdGetter.applyAsInt(broker);
-        var advertisedAddress = listenerModel.getAdvertisedBrokerAddress(nodeId);
+        var advertisedAddress = listenerModel.getAdvertisedBrokerAddress(nodeId, rackId);
 
         LOGGER.atTrace()
                 .addKeyValue("sessionId", context.sessionId())
@@ -179,7 +190,7 @@ public class BrokerAddressFilter implements MetadataResponseFilter, FindCoordina
     }
 
     private CompletionStage<ResponseFilterResult> doReconcileThenForwardResponse(ResponseHeaderData header, ApiMessage data, FilterContext context,
-                                                                                 Map<Integer, HostPort> nodeMap) {
+                                                                                 Map<Integer, BrokerEndpointMapping> nodeMap) {
         return reconciler.reconcile(listenerModel, nodeMap).toCompletableFuture()
                 .thenCompose(u -> {
                     LOGGER.atDebug()

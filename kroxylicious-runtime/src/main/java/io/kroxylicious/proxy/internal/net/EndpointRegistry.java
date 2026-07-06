@@ -121,7 +121,7 @@ public class EndpointRegistry implements EndpointReconciler, EndpointBindingReso
 
     protected static final AttributeKey<Map<RoutingKey, EndpointBinding>> CHANNEL_BINDINGS = AttributeKey.newInstance("channelBindings");
 
-    private record ReconciliationRecord(Map<Integer, HostPort> upstreamNodeMap, CompletionStage<Void> reconciliationStage) {
+    private record ReconciliationRecord(Map<Integer, BrokerEndpointMapping> upstreamNodeMap, CompletionStage<Void> reconciliationStage) {
         private ReconciliationRecord {
             Objects.requireNonNull(upstreamNodeMap);
             Objects.requireNonNull(reconciliationStage);
@@ -131,7 +131,7 @@ public class EndpointRegistry implements EndpointReconciler, EndpointBindingReso
             return ReconciliationRecord.createReconcileRecord(Map.of(), CompletableFuture.completedStage(null));
         }
 
-        private static ReconciliationRecord createReconcileRecord(Map<Integer, HostPort> upstreamNodeMap, CompletionStage<Void> future) {
+        private static ReconciliationRecord createReconcileRecord(Map<Integer, BrokerEndpointMapping> upstreamNodeMap, CompletionStage<Void> future) {
             return new ReconciliationRecord(upstreamNodeMap, future);
         }
 
@@ -316,11 +316,11 @@ public class EndpointRegistry implements EndpointReconciler, EndpointBindingReso
      * Reconciles the current set of bindings for this virtual cluster against those required by the current set of nodes.
      *
      * @param virtualClusterModel virtual cluster
-     * @param upstreamNodes  current map of node id to upstream host ports
+     * @param upstreamNodes  current map of node id to upstream broker endpoint information
      * @return CompletionStage yielding true if binding alterations were made, or false otherwise.
      */
     @Override
-    public CompletionStage<Void> reconcile(EndpointGateway virtualClusterModel, Map<Integer, HostPort> upstreamNodes) {
+    public CompletionStage<Void> reconcile(EndpointGateway virtualClusterModel, Map<Integer, BrokerEndpointMapping> upstreamNodes) {
         Objects.requireNonNull(virtualClusterModel, VIRTUAL_CLUSTER_CANNOT_BE_NULL_MESSAGE);
         Objects.requireNonNull(upstreamNodes, "upstreamNodes cannot be null");
 
@@ -370,7 +370,8 @@ public class EndpointRegistry implements EndpointReconciler, EndpointBindingReso
         }
     }
 
-    private void doReconcile(EndpointGateway virtualClusterModel, Map<Integer, HostPort> upstreamNodes, CompletableFuture<Void> future, VirtualClusterRecord vcr) {
+    private void doReconcile(EndpointGateway virtualClusterModel, Map<Integer, BrokerEndpointMapping> upstreamNodes, CompletableFuture<Void> future,
+                             VirtualClusterRecord vcr) {
         var bindingAddress = virtualClusterModel.getBindAddress();
 
         var discoveryBrokerIds = Optional.ofNullable(virtualClusterModel.discoveryAddressMap()).map(Map::keySet).orElse(Set.of());
@@ -403,7 +404,10 @@ public class EndpointRegistry implements EndpointReconciler, EndpointBindingReso
         // chain any binding registrations and organise for the reconciliations entry to complete
         deregs.thenCompose(u1 -> allOfStage(creations.stream()
                 .map(vcbb -> {
-                    var brokerAddress = virtualClusterModel.getBrokerAddress(vcbb.nodeId());
+                    var upstreamBroker = upstreamNodes.get(vcbb.nodeId());
+                    var rackId = upstreamBroker == null ? null : upstreamBroker.rackId();
+                    var brokerAddress = rackId == null ? virtualClusterModel.getBrokerAddress(vcbb.nodeId())
+                            : virtualClusterModel.getBrokerAddress(vcbb.nodeId(), rackId);
                     var endpoint = Endpoint.createEndpoint(bindingAddress, brokerAddress.port(), virtualClusterModel.isUseTls());
                     return registerBinding(endpoint, brokerAddress.host(), vcbb);
                 })))
@@ -421,12 +425,12 @@ public class EndpointRegistry implements EndpointReconciler, EndpointBindingReso
     }
 
     private Set<EndpointBinding> constructPossibleBindingsToCreate(EndpointGateway virtualClusterModel,
-                                                                   Map<Integer, HostPort> upstreamNodes) {
+                                                                   Map<Integer, BrokerEndpointMapping> upstreamNodes) {
         var discoveryBrokerIds = virtualClusterModel.discoveryAddressMap();
         // create possible set of bindings to create
         var creations = upstreamNodes.entrySet()
                 .stream()
-                .map(e -> new BrokerEndpointBinding(virtualClusterModel, e.getValue(), e.getKey()))
+                .map(e -> new BrokerEndpointBinding(virtualClusterModel, e.getValue().upstreamAddress(), e.getKey()))
                 .map(EndpointBinding.class::cast)
                 .collect(Collectors.toCollection(ConcurrentHashMap::newKeySet));
         // add bindings corresponding to any pre-bindings. There are marked as restricted and point to bootstrap.

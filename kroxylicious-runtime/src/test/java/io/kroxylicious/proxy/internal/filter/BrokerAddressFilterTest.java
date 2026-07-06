@@ -16,11 +16,13 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.apache.kafka.common.message.ApiMessageType;
+import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.message.RequestHeaderData;
 import org.apache.kafka.common.message.ResponseHeaderData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.ApiMessage;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -37,6 +39,7 @@ import com.google.common.reflect.ClassPath;
 import io.kroxylicious.proxy.filter.Filter;
 import io.kroxylicious.proxy.filter.FilterContext;
 import io.kroxylicious.proxy.internal.filter.impl.BrokerAddressFilter;
+import io.kroxylicious.proxy.internal.net.BrokerEndpointMapping;
 import io.kroxylicious.proxy.internal.net.EndpointReconciler;
 import io.kroxylicious.proxy.model.VirtualClusterModel.VirtualClusterGatewayModel;
 import io.kroxylicious.proxy.service.HostPort;
@@ -107,9 +110,10 @@ class BrokerAddressFilterTest {
         invoker = getOnlyElement(FilterAndInvoker.build(((Filter) filter).getClass().getSimpleName(), filter)).invoker();
         lenient().when(virtualClusterListenerModel.getBrokerAddress(0)).thenReturn(HostPort.parse("downstream:19199"));
         lenient().when(virtualClusterListenerModel.getAdvertisedBrokerAddress(0)).thenReturn(HostPort.parse("downstream:19200"));
+        lenient().when(virtualClusterListenerModel.getAdvertisedBrokerAddress(Mockito.eq(0), Mockito.nullable(String.class)))
+                .thenReturn(HostPort.parse("downstream:19200"));
 
-        var nodeMap = Map.of(0, HostPort.parse("upstream:9199"));
-        lenient().when(endpointReconciler.reconcile(Mockito.eq(virtualClusterListenerModel), Mockito.eq(nodeMap)))
+        lenient().when(endpointReconciler.reconcile(Mockito.eq(virtualClusterListenerModel), Mockito.anyMap()))
                 .thenReturn(CompletableFuture.completedStage(null));
     }
 
@@ -129,6 +133,28 @@ class BrokerAddressFilterTest {
 
         filterResponseAndVerify(apiMessageType, header, responseTestDef);
         verify(endpointReconciler, times(1)).reconcile(Mockito.eq(virtualClusterListenerModel), Mockito.anyMap());
+    }
+
+    @Test
+    void metadataResponseRewrittenUsingRackIdAndReconciledWithRackId() throws Exception {
+        var response = new MetadataResponseData();
+        response.brokers().add(new MetadataResponseData.MetadataResponseBroker()
+                .setNodeId(0)
+                .setHost("upstream")
+                .setPort(9199)
+                .setRack("euc1-az1"));
+        lenient().when(virtualClusterListenerModel.getAdvertisedBrokerAddress(0, "euc1-az1")).thenReturn(HostPort.parse("downstream-az1:19200"));
+        configureContextResponseStubbing();
+
+        var stage = filter.onMetadataResponse(ApiKeys.METADATA.latestVersion(), new ResponseHeaderData(), response, context);
+
+        assertThat(stage).isCompleted();
+        assertThat(response.brokers().find(0).host()).isEqualTo("downstream-az1");
+        assertThat(response.brokers().find(0).port()).isEqualTo(19200);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<Integer, BrokerEndpointMapping>> nodeMapCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(endpointReconciler).reconcile(Mockito.eq(virtualClusterListenerModel), nodeMapCaptor.capture());
+        assertThat(nodeMapCaptor.getValue()).containsEntry(0, new BrokerEndpointMapping(HostPort.parse("upstream:9199"), "euc1-az1"));
     }
 
     private void filterResponseAndVerify(ApiMessageType apiMessageType, RequestHeaderData header, ApiMessageTestDef responseTestDef) throws Exception {

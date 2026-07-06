@@ -7,6 +7,7 @@
 package io.kroxylicious.proxy.config;
 
 import java.net.URI;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -22,6 +23,7 @@ import io.kroxylicious.proxy.service.NodeIdentificationStrategy;
 import edu.umd.cs.findbugs.annotations.Nullable;
 
 import static io.kroxylicious.proxy.config.BrokerAddressPatternUtils.LITERAL_NODE_ID;
+import static io.kroxylicious.proxy.config.BrokerAddressPatternUtils.LITERAL_RACK_ID;
 import static io.kroxylicious.proxy.config.BrokerAddressPatternUtils.LITERAL_UNRESOLVED_ROUTE_HOST;
 import static io.kroxylicious.proxy.config.BrokerAddressPatternUtils.LITERAL_VIRTUAL_CLUSTER_NAME;
 import static io.kroxylicious.proxy.config.BrokerAddressPatternUtils.validatePortSpecifier;
@@ -41,6 +43,7 @@ import static io.kroxylicious.proxy.config.BrokerAddressPatternUtils.validateStr
  *    <ul>
  *        <li>{@code $(nodeId)} - which interpolates the node id into the address.</li>
  *        <li>{@code $(virtualClusterName)} - which interpolates the virtual cluster name into the address.</li>
+ *        <li>{@code $(rackId)} or {@code $(rackId:default)} - which interpolates the broker rack id into the address.</li>
  *    </ul>
  * </ul>
  */
@@ -52,8 +55,11 @@ public class SniHostIdentifiesNodeIdentificationStrategy
     @JsonProperty(required = true)
     private final String advertisedBrokerAddressPattern;
 
+    @JsonProperty(required = false)
+    private final Map<String, String> rackIdMappings;
+
     private static final Set<String> REQUIRED_TOKEN_SET = Set.of(LITERAL_NODE_ID);
-    private static final Set<String> ALLOWED_TOKEN_SET = Set.of(LITERAL_NODE_ID, LITERAL_VIRTUAL_CLUSTER_NAME, LITERAL_UNRESOLVED_ROUTE_HOST);
+    private static final Set<String> ALLOWED_TOKEN_SET = Set.of(LITERAL_NODE_ID, LITERAL_RACK_ID, LITERAL_VIRTUAL_CLUSTER_NAME, LITERAL_UNRESOLVED_ROUTE_HOST);
 
     @JsonIgnore
     private final String parsedBootstrapAddressPattern;
@@ -79,9 +85,14 @@ public class SniHostIdentifiesNodeIdentificationStrategy
         return bootstrapPort;
     }
 
+    public SniHostIdentifiesNodeIdentificationStrategy(String bootstrapAddress, String advertisedBrokerAddressPattern) {
+        this(bootstrapAddress, advertisedBrokerAddressPattern, null);
+    }
+
     @JsonCreator
     public SniHostIdentifiesNodeIdentificationStrategy(@JsonProperty(required = true, value = "bootstrapAddress") String bootstrapAddress,
-                                                       @JsonProperty(required = true, value = "advertisedBrokerAddressPattern") String advertisedBrokerAddressPattern) {
+                                                       @JsonProperty(required = true, value = "advertisedBrokerAddressPattern") String advertisedBrokerAddressPattern,
+                                                       @Nullable @JsonProperty(required = false, value = "rackIdMappings") Map<String, String> rackIdMappings) {
         if (bootstrapAddress == null) {
             throw new IllegalArgumentException("bootstrapAddress cannot be null");
         }
@@ -90,6 +101,7 @@ public class SniHostIdentifiesNodeIdentificationStrategy
         }
         this.bootstrapAddress = bootstrapAddress;
         this.advertisedBrokerAddressPattern = advertisedBrokerAddressPattern;
+        this.rackIdMappings = rackIdMappings == null ? Map.of() : Map.copyOf(rackIdMappings);
 
         BrokerAddressPatternUtils.PatternAndPort bootstrapPatternAndPort = BrokerAddressPatternUtils.parse(bootstrapAddress);
         Optional<Integer> maybeBootstrapPort = bootstrapPatternAndPort.port();
@@ -127,6 +139,11 @@ public class SniHostIdentifiesNodeIdentificationStrategy
         return advertisedBrokerAddressPattern;
     }
 
+    @JsonProperty(required = false)
+    public Map<String, String> getRackIdMappings() {
+        return rackIdMappings;
+    }
+
     @Override
     public boolean equals(Object obj) {
         if (obj == this) {
@@ -137,19 +154,21 @@ public class SniHostIdentifiesNodeIdentificationStrategy
         }
         var that = (SniHostIdentifiesNodeIdentificationStrategy) obj;
         return Objects.equals(this.bootstrapAddress, that.bootstrapAddress) &&
-                Objects.equals(this.advertisedBrokerAddressPattern, that.advertisedBrokerAddressPattern);
+                Objects.equals(this.advertisedBrokerAddressPattern, that.advertisedBrokerAddressPattern) &&
+                Objects.equals(this.rackIdMappings, that.rackIdMappings);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(bootstrapAddress, advertisedBrokerAddressPattern);
+        return Objects.hash(bootstrapAddress, advertisedBrokerAddressPattern, rackIdMappings);
     }
 
     @Override
     public String toString() {
         return "SniHostIdentifiesNodeIdentificationStrategy[" +
                 "bootstrapAddress=" + bootstrapAddress + ", " +
-                "advertisedBrokerAddressPattern=" + advertisedBrokerAddressPattern + ']';
+                "advertisedBrokerAddressPattern=" + advertisedBrokerAddressPattern + ", " +
+                "rackIdMappings=" + rackIdMappings + ']';
     }
 
     public static class UnresolvedHostException extends RuntimeException {
@@ -167,6 +186,7 @@ public class SniHostIdentifiesNodeIdentificationStrategy
 
         private final HostPort bootstrapAddress;
         private final String brokerAddressPattern;
+        private final boolean usesRackId;
         private final Pattern brokerAddressNodeIdCapturingRegex;
         private final int advertisedPort;
 
@@ -191,9 +211,10 @@ public class SniHostIdentifiesNodeIdentificationStrategy
                 throw new IllegalArgumentException("Bootstrap address is not a valid URI: " + bootstrapAddress, e);
             }
             this.brokerAddressPattern = BrokerAddressPatternUtils.replaceVirtualClusterName(parsedBrokerAddressPattern, clusterName);
+            this.usesRackId = BrokerAddressPatternUtils.containsRackIdToken(brokerAddressPattern);
             this.brokerAddressNodeIdCapturingRegex = buildNodeIdCaptureRegex(clusterName);
             this.advertisedPort = getAdvertisedPort();
-            HostPort advertisedBrokerAddress = getAdvertisedBrokerAddress(1);
+            HostPort advertisedBrokerAddress = getAdvertisedBrokerAddress(1, sampleRackId());
             try {
                 URI.create(advertisedBrokerAddress.toString());
             }
@@ -206,8 +227,12 @@ public class SniHostIdentifiesNodeIdentificationStrategy
         private void validateAddresses() {
             HostPort clusterBootstrapAddress = getClusterBootstrapAddress();
             URI.create(clusterBootstrapAddress.toString());
-            HostPort advertisedBrokerAddress = getAdvertisedBrokerAddress(1);
+            HostPort advertisedBrokerAddress = getAdvertisedBrokerAddress(1, sampleRackId());
             URI.create(advertisedBrokerAddress.toString());
+        }
+
+        private @Nullable String sampleRackId() {
+            return usesRackId ? "rack" : null;
         }
 
         private Pattern buildNodeIdCaptureRegex(String clusterName) {
@@ -222,17 +247,32 @@ public class SniHostIdentifiesNodeIdentificationStrategy
 
         @Override
         public HostPort getBrokerAddress(int nodeId) {
+            return getBrokerAddress(nodeId, null);
+        }
+
+        @Override
+        public HostPort getBrokerAddress(int nodeId, @Nullable String rackId) {
             if (nodeId < 0) {
                 // nodeIds of < 0 have special meaning to kafka.
                 throw new IllegalArgumentException("nodeId cannot be less than zero");
             }
             // TODO: consider introducing an cache (LRU?)
-            return new HostPort(BrokerAddressPatternUtils.replaceLiteralNodeId(brokerAddressPattern, nodeId), bootstrapAddress.port());
+            var host = BrokerAddressPatternUtils.replaceLiteralNodeId(brokerAddressPattern, nodeId);
+            if (usesRackId) {
+                host = BrokerAddressPatternUtils.replaceRackId(host, rackId, rackIdMappings);
+            }
+            return new HostPort(host, bootstrapAddress.port());
         }
 
         @Override
         public HostPort getAdvertisedBrokerAddress(int nodeId) {
             HostPort brokerAddress = getBrokerAddress(nodeId);
+            return new HostPort(brokerAddress.host(), advertisedPort);
+        }
+
+        @Override
+        public HostPort getAdvertisedBrokerAddress(int nodeId, @Nullable String rackId) {
+            HostPort brokerAddress = getBrokerAddress(nodeId, rackId);
             return new HostPort(brokerAddress.host(), advertisedPort);
         }
 

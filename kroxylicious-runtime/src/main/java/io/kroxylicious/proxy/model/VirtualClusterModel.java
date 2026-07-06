@@ -510,6 +510,11 @@ public class VirtualClusterModel implements AutoCloseable {
         }
 
         @Override
+        public HostPort getBrokerAddress(int nodeId, @Nullable String rackId) throws IllegalArgumentException {
+            return getNodeIdentificationStrategy().getBrokerAddress(nodeId, rackId);
+        }
+
+        @Override
         public Optional<String> getBindAddress() {
             return getNodeIdentificationStrategy().getBindAddress();
         }
@@ -547,6 +552,11 @@ public class VirtualClusterModel implements AutoCloseable {
         @Override
         public HostPort getAdvertisedBrokerAddress(int nodeId) {
             return getNodeIdentificationStrategy().getAdvertisedBrokerAddress(nodeId);
+        }
+
+        @Override
+        public HostPort getAdvertisedBrokerAddress(int nodeId, @Nullable String rackId) {
+            return getNodeIdentificationStrategy().getAdvertisedBrokerAddress(nodeId, rackId);
         }
 
         @Override
